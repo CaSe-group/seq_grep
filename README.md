@@ -9,6 +9,7 @@ If you need to use grep with multiple colors and search terms to visually inspec
 * supports reverse complement search `--rc`
 * colors are red, blue, green, yellow, and up to 9 search terms per color
     * `-r1` would be a search term colored in red
+    * see also --help
 * can multithread if .fastq was used as an input; .fastq.gz is slow
 
 Example code:
