@@ -1,4 +1,4 @@
-grep for reads
+Step 1: Grep for reads
 ===
 
 If you need to use grep with multiple colors and search terms to visually inspect reads for problems.
@@ -22,24 +22,34 @@ python3 searcher.py all.fastq -r1 "GGTTACACAAACCCTGGACA" -b2 "GGATTCATTCCCACGGTA
 
 ![alt text](image.png)
 
-Search for IDs
+Step 2: Search for IDs in your demultiplexed fastq files
 ===
 ## What does it do
-Searches through FASTQ files (including gzipped formats) to find specific read IDs provided in a list. When a match is found, it extracts the associated barcode sequence from the header line and compiles the results into a CSV file.
+Searches through FASTQ files (including gzipped formats) to find specific read IDs provided in a list. When a match is found, it extracts the associated sample name and compiles the results into a CSV file.
 
 Files Required
-* Read ID File (.txt): A text file containing one target read ID per line (e.g., matching_ids.txt (from previous script)).
-* Reads Folder: A directory containing your read files (.fastq or fastq.gz), which you want so screen.
+* Read ID File (.txt): A text file containing one target read ID per line (e.g., matching_ids.txt (from Step 1)).
+* Reads Folder: A directory containing your read files (.fastq or fastq.gz), which you want to screen.
 
 Example code:
 ```
-python3 ID_finder.py my_reads.txt /data/sequencing/run1
+python3 ID_finder.py matching_ids.txt /fastq/
 ```
 
 ## Output
 
-The script generates a CSV file (default: ID_to_barcode_output.csv) with the following two columns: ID, barcode
+The script generates a CSV file (default: ID_to_filename_output.csv) with the following two columns: ID, Filename
 
 ## Terminal output
 
 ![alt text](terminal_promt.png)
+
+# Quick start
+**Step 1:**
+```
+python3 searcher.py all.fastq -r1 "GGTTACACAAACCCTGGACA" -b2 "GGATTCATTCCCACGGTAAC" -rc --limit 20
+```
+**Step 2:**
+```
+python3 ID_finder.py matching_ids.txt /fastq/
+```
