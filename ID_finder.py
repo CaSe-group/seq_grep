@@ -1,24 +1,25 @@
+#!/usr/bin/env python3
 import os
 import sys
 import gzip
 import re
 import csv
+import argparse
 from typing import Dict, Set, List, Tuple
 from collections import Counter
 
-def search_barcodes(ids_file_path: str, fastq_dir_path: str, output_csv_path: str = 'ID_to_barcode_output.csv'):
+def search_barcodes(ids_file_path: str, fastq_dir_path: str, output_csv_path: str):
     """
     Searches FASTQ.gz files in a directory for specific read IDs and extracts their barcodes.
 
     Args:
         ids_file_path: Path to the .txt file containing read IDs (one per line).
-        fastq_dir_path: Path to the directory containing .fastq.gz files.
+        fastq_dir_path: Path to the directory containing .fastq.gz or .fq.gz files.
         output_csv_path: Path for the output CSV file (ID, Barcode).
     """
 
     # --- REGEX DEFINITIONS ---
-    # Regex to extract the read ID from the FASTQ header (up to the first space/tab)
-    # This captures the ID *without* the leading '@'
+    # Regex to extract the read ID from the FASTQ header (up to the first space/tab), without the leading '@'
     id_regex = re.compile(r'^@([^ \t]+)')
 
     # Regex to handle potential read number suffixes (/1, /2) often present in FASTQ headers.
@@ -34,20 +35,19 @@ def search_barcodes(ids_file_path: str, fastq_dir_path: str, output_csv_path: st
     try:
         with open(ids_file_path, 'r') as f:
             for line in f:
-                # Remove leading/trailing whitespace and ensure the ID is not empty
+                # Remove leading/trailing whitespace
                 read_id = line.strip()
                 if read_id:
-                    # NEW: Normalize the input ID for robust matching:
-                    # 1. Remove leading '@' if present in the input file.
+                    # Normalize the input ID for robust matching:
+                    # 1. Remove leading '@' if present.
                     if read_id.startswith('@'):
                         read_id = read_id[1:]
-                    # 2. Remove common read suffixes if they exist in the input file (to be safe).
+                    # 2. Remove common read suffixes if they exist.
                     read_id = read_suffix_regex.sub('', read_id)
-                    
                     target_ids.add(read_id)
     except FileNotFoundError:
         print(f"Error: IDs file not found at {ids_file_path}")
-        return
+        sys.exit(1) # Exit if essential input file is missing
 
     if not target_ids:
         print("Warning: No IDs found in the input file. Exiting.")
@@ -64,10 +64,14 @@ def search_barcodes(ids_file_path: str, fastq_dir_path: str, output_csv_path: st
     print(f"Searching FASTQ files in directory: {fastq_dir_path}")
 
     # Filter for compressed FASTQ files
-    fastq_files = [f for f in os.listdir(fastq_dir_path) if f.endswith('.fastq.gz') or f.endswith('.fq.gz')]
+    try:
+        fastq_files = [f for f in os.listdir(fastq_dir_path) if f.endswith('.fastq.gz') or f.endswith('.fq.gz')]
+    except FileNotFoundError:
+        print(f"Error: FASTQ directory not found: {fastq_dir_path}")
+        sys.exit(1)
 
     if not fastq_files:
-        print(f"Warning: No .fastq.gz or .fq.gz files found in {fastq_dir_path}.")
+        print(f"Warning: No .fastq.gz or .fq.gz files found in {fastq_dir_path}. Outputting 'NA' for all IDs.")
 
     for filename in fastq_files:
         # Stop searching if all IDs have been found
@@ -79,15 +83,11 @@ def search_barcodes(ids_file_path: str, fastq_dir_path: str, output_csv_path: st
         print(f"Processing: {filename}...")
 
         try:
-            # Use 'rt' (read text) mode for gzip.open to handle compressed text files
+            # Use 'rt' (read text) mode for gzip.open
             with gzip.open(full_path, 'rt', encoding='utf-8', errors='ignore') as fastq_file:
 
-                # We only need to check every 4th line (the header line)
-                line_count = 0
-                for line in fastq_file:
-                    line_count += 1
-
-                    # Check only the read header line (first line of every block of four)
+                # Process every 4th line (the header line)
+                for line_count, line in enumerate(fastq_file, 1):
                     if line_count % 4 == 1 and line.startswith('@'):
 
                         # 2a. Extract the full ID from the FASTQ header (before any space, WITHOUT @)
@@ -97,15 +97,13 @@ def search_barcodes(ids_file_path: str, fastq_dir_path: str, output_csv_path: st
 
                         extracted_id = id_match.group(1).strip()
 
-                        # 2b. Normalize the extracted ID to the 'base ID' format
-                        # This removes suffixes like /1 or /2 so it matches the clean ID from the .txt file.
+                        # 2b. Normalize the extracted ID (removes /1 or /2 suffix)
                         read_id = read_suffix_regex.sub('', extracted_id)
-
 
                         # Check if this base ID is one of our target IDs
                         if read_id in ids_to_find:
 
-                            # Extract the barcode value (content after the equal sign)
+                            # Extract the barcode value
                             barcode_match = barcode_regex.search(line)
 
                             barcode_value = 'NA'
@@ -116,17 +114,15 @@ def search_barcodes(ids_file_path: str, fastq_dir_path: str, output_csv_path: st
                             results[read_id] = barcode_value
                             ids_to_find.remove(read_id)
 
-        except FileNotFoundError:
-            print(f"Error: FASTQ file not found: {full_path}")
         except Exception as e:
             print(f"An error occurred while reading {filename}: {e}")
+            continue
 
 
     # 3. Write results to CSV
     print(f"\nWriting results to: {output_csv_path}")
 
-    # Prepare the data list for CSV writer, ensuring the order matches the target IDs
-    # Prepend '@' to the ID from the target_ids list for the output as requested by the user.
+    # Prepare the data list for CSV writer. Prepend '@' to the ID for the output.
     output_data: List[Tuple[str, str]] = [(f"@{id_}", results[id_]) for id_ in target_ids]
 
     try:
@@ -140,26 +136,26 @@ def search_barcodes(ids_file_path: str, fastq_dir_path: str, output_csv_path: st
             csv_writer.writerows(output_data)
 
         print(f"Successfully saved {len(output_data)} results.")
-        
+
     except Exception as e:
         print(f"An error occurred while writing the CSV file: {e}")
+        sys.exit(1)
 
     # 4. Summarize results and print to terminal
     print("\n--- Barcode Summary ---")
-    
+
     # Use collections.Counter to easily tally the barcode values
     barcode_counts = Counter(results.values())
-    
+
     # Calculate the number of IDs found (those not assigned 'NA')
     found_count = total_target_ids - barcode_counts.get('NA', 0)
-    
+
     # Calculate percentage found
     percentage_found = (found_count / total_target_ids) * 100 if total_target_ids > 0 else 0
 
     # Sort the summary output by barcode name (alphabetically)
     for barcode, count in sorted(barcode_counts.items()):
         if barcode == 'NA':
-            # Highlight 'NA' counts separately
             print(f"  {barcode} (IDs Not Found): {count}")
         else:
             # Calculate percentage relative to the IDs FOUND (excluding 'NA')
@@ -176,18 +172,36 @@ def search_barcodes(ids_file_path: str, fastq_dir_path: str, output_csv_path: st
     print(f"-----------------------")
 
 
-# Command-line execution block
 if __name__ == '__main__':
-    if len(sys.argv) < 3:
-        print("Usage: python3 ID_barcode_finder.py <path_to_ids.txt> <path_to_fastq_directory> [output_file.csv]")
-        print("\nExample:")
-        print("python3 ID_barcode_finder.py my_reads.txt /data/sequencing/run1")
-        sys.exit(1)
+    # Initialize Argument Parser
+    parser = argparse.ArgumentParser(
+        description="Search for specific read IDs in FASTQ.gz files and extract their barcodes.",
+        formatter_class=argparse.RawTextHelpFormatter # For better multiline help formatting
+    )
 
-    ids_path = sys.argv[1]
-    fastq_dir = sys.argv[2]
+    # Positional Arguments
+    parser.add_argument(
+        'ids_file',
+        type=str,
+        help="Path to the .txt file containing target read IDs (one per line)."
+    )
 
-    # Use default output path or user-provided one
-    output_path = sys.argv[3] if len(sys.argv) > 3 else 'ID_to_barcode_output.csv'
+    parser.add_argument(
+        'fastq_dir',
+        type=str,
+        help="Path to the directory containing .fastq.gz or .fq.gz files."
+    )
 
-    search_barcodes(ids_path, fastq_dir, output_path)
+    # Optional Argument
+    parser.add_argument(
+        '-o', '--output',
+        type=str,
+        default='ID_to_barcode_output.csv',
+        help="Path for the output CSV file (default: ID_to_barcode_output.csv)."
+    )
+
+    # Parse arguments
+    args = parser.parse_args()
+
+    # Call the main function with parsed arguments
+    search_barcodes(args.ids_file, args.fastq_dir, args.output)
