@@ -16,9 +16,9 @@ COLOR_YELLOW = "\033[93m"
 COLOR_RESET = "\033[0m"
 
 # Number of reads (4 lines per read) to send to a worker process at once
-BATCH_SIZE = 50000 
+BATCH_SIZE = 50000
 # Update progress bar every N batches
-PROGRESS_UPDATE_FREQUENCY = 10 
+PROGRESS_UPDATE_FREQUENCY = 10
 
 # IUPAC Degeneracy Map (for converting sequence to regex pattern)
 IUPAC_MAP = {
@@ -153,7 +153,9 @@ def _read_fastq_batches(f_handle, batch_size):
             
             # Line 1: Header
             header = lines[0].strip()
-            header_id = header.split(None, 1)[0] if header.startswith('@') else "Unknown"
+            # Ensure we only take the ID part, handling cases where it might not start with '@' unexpectedly
+            header_id = header.split(None, 1)[0] if header.startswith('@') else (header.split(None, 1)[0] if header else "Unknown")
+
 
             # Line 2: Sequence
             sequence = lines[1]
@@ -168,8 +170,11 @@ def _process_reads_in_parallel(filepath: str, required_matches: list[dict], max_
     """
     Handles reading the file sequentially and distributing sequence lines
     to a worker pool for parallel processing. (For uncompressed files only).
+    
+    Returns the list of all matching header IDs.
     """
     MAX_PRINT_LINES = max_print_lines
+    all_matching_ids = []
 
     # Prepare a lightweight version of required_matches for pickling/passing to workers
     # We include 'color' here so the worker can perform highlighting if a full match occurs.
@@ -223,6 +228,9 @@ def _process_reads_in_parallel(filepath: str, required_matches: list[dict], max_
                         
                         # Handle full match printing (Printing is done sequentially in the main thread)
                         for header_id, highlighted_output in found_matches_in_batch:
+                            # Collect the ID for output file
+                            all_matching_ids.append(header_id)
+                            
                             found_count += 1
                             if found_count <= MAX_PRINT_LINES:
                                 sys.stdout.write(f"\r[{header_id}]: {highlighted_output}\n")
@@ -230,7 +238,7 @@ def _process_reads_in_parallel(filepath: str, required_matches: list[dict], max_
                             elif found_count == MAX_PRINT_LINES + 1:
                                 sys.stdout.write(f"\r[... Output limited after {MAX_PRINT_LINES} reads to accelerate processing ...]\n")
                                 sys.stdout.flush()
-                        
+                            
                         # Update progress bar
                         reads_completed_approx += BATCH_SIZE # Approximate completion status
                         if batch_counter % PROGRESS_UPDATE_FREQUENCY == 0:
@@ -244,22 +252,25 @@ def _process_reads_in_parallel(filepath: str, required_matches: list[dict], max_
 
         # Print final status
         sys.stdout.write(f"\rReads processed: {reads_processed:,} (100% complete)\n")
-        return reads_processed, found_count
+        return reads_processed, found_count, all_matching_ids # added all_matching_ids
 
     except FileNotFoundError:
         print(f"\nError: The file '{filepath}' was not found.")
-        return 0, 0
+        return 0, 0, [] 
     except Exception as e:
         print(f"\nAn unexpected error occurred during parallel processing: {e}", file=sys.stderr)
-        return 0, 0
+        return 0, 0, [] 
 
 
 def _grep_and_highlight_sequential(filepath: str, required_matches: list[dict], max_print_lines: int):
     """
     Searches a file sequentially (used for gzipped files).
+    
+    Returns the list of all matching header IDs.
     """
     MAX_PRINT_LINES = max_print_lines
     PROGRESS_UPDATE_FREQUENCY = 10000
+    all_matching_ids = [] # ADDED: List to collect all matching IDs
 
     is_compressed = filepath.lower().endswith(('.gz', '.tgz'))
     opener = gzip.open if is_compressed else open
@@ -281,6 +292,7 @@ def _grep_and_highlight_sequential(filepath: str, required_matches: list[dict], 
                 # --- FASTQ Header Logic: Capture the read ID (Line 1: @) ---
                 if line_number % 4 == 1 and line.startswith('@'):
                     try:
+                        # Extract the ID part only
                         last_header_id = line_stripped.split(None, 1)[0]
                     except IndexError:
                         last_header_id = "@Unknown"
@@ -313,8 +325,10 @@ def _grep_and_highlight_sequential(filepath: str, required_matches: list[dict], 
                     if all_logical_terms_present:
                         found_count += 1
                         
+                        identifier = last_header_id if last_header_id is not None else f"@Line_{reads_processed}"
+                        all_matching_ids.append(identifier) # ADDED: Collect the matching ID
+                        
                         if found_count <= MAX_PRINT_LINES:
-                            identifier = last_header_id if last_header_id is not None else f"Line {line_number}"
                             highlighted_output = highlight_matches(line_stripped, required_matches)
                             
                             sys.stdout.write(f"\r[{identifier}]: {highlighted_output}\n")
@@ -326,19 +340,21 @@ def _grep_and_highlight_sequential(filepath: str, required_matches: list[dict], 
             # Final update
             final_reads_processed = line_number // 4
             sys.stdout.write(f"\rReads processed: {final_reads_processed:,} (100% complete)\n")
-            return final_reads_processed, found_count
+            return final_reads_processed, found_count, all_matching_ids # added all_matching_ids
 
     except FileNotFoundError:
         print(f"\nError: The file '{filepath}' was not found.")
-        return 0, 0
+        return 0, 0, [] 
     except Exception as e:
         print(f"\nAn unexpected error occurred: {e}", file=sys.stderr)
-        return 0, 0
+        return 0, 0, [] 
 
 
 def grep_and_highlight(filepath: str, required_matches: list[dict], max_print_lines: int):
     """
     Router function to select parallel or sequential processing.
+    
+    Collects matching IDs and writes them to a file.
     """
     if not required_matches:
         print("Error: Please provide at least one search term.")
@@ -346,13 +362,30 @@ def grep_and_highlight(filepath: str, required_matches: list[dict], max_print_li
 
     # Determine if the file is compressed
     is_compressed = filepath.lower().endswith(('.gz', '.tgz'))
+    
+    # Initialize variables with default values
+    total_reads = 0
+    found_count = 0
+    all_matching_ids = []
 
     if is_compressed:
         # GZIP files cannot be easily parallelized, use sequential streaming
-        total_reads, found_count = _grep_and_highlight_sequential(filepath, required_matches, max_print_lines)
+        total_reads, found_count, all_matching_ids = _grep_and_highlight_sequential(filepath, required_matches, max_print_lines)
     else:
         # Use parallel processing for CPU-intensive regex matching
-        total_reads, found_count = _process_reads_in_parallel(filepath, required_matches, max_print_lines)
+        total_reads, found_count, all_matching_ids = _process_reads_in_parallel(filepath, required_matches, max_print_lines)
+
+    # --- ADDED: FILE OUTPUT ---
+    if all_matching_ids:
+        output_filename = "matching_ids.txt"
+        try:
+            with open(output_filename, 'w') as out_f:
+                # Write each ID on a new line
+                out_f.write('\n'.join(all_matching_ids) + '\n')
+            print(f"\n{COLOR_GREEN}Successfully wrote {len(all_matching_ids)} matching read IDs to '{output_filename}'{COLOR_RESET}")
+        except Exception as e:
+            print(f"Error writing ID file '{output_filename}': {e}", file=sys.stderr)
+    # --- END FILE OUTPUT ---
 
     # --- FINAL SUMMARY ---
     print(f"\n--- Search Complete ---")
